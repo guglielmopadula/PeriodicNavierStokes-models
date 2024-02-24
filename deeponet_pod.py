@@ -36,8 +36,8 @@ u_test=u_test.reshape(u_test.shape[0],-1)
 a_test=a_test.reshape(u_test.shape[0],-1)
 u_super=u_super.reshape(u_super.shape[0],-1)
 a_super=a_super.reshape(u_super.shape[0],-1)
-a_train=a_train.unsqueeze(-1).repeat(1,1,50).reshape(a_train.shape[0],-1)
-a_test=a_test.unsqueeze(-1).repeat(1,1,50).reshape(a_test.shape[0],-1)
+a_train=a_train.reshape(a_train.shape[0],-1)
+a_test=a_test.reshape(a_test.shape[0],-1)
 
 points=all_points
 points_super=all_points_super
@@ -216,7 +216,7 @@ class Operator():
         #self.y_min=np.min(y)
         #y=(y-self.y_min)/(self.y_max-self.y_min)
         self.modes,self.basis=compute_exact(y,self.p)
-        self.indices=np.random.permutation(self.basis.shape[1])[:self.m]
+        self.indices=np.random.permutation(4096)[:self.m]
         self.model_branch.fit(x[:,self.indices],self.modes,10000,600)#
         self.model_branch.eval()
         print(np.linalg.norm(self.model_branch.predict(x[:,self.indices],batch_size=600)-self.modes)/np.linalg.norm(self.modes))
