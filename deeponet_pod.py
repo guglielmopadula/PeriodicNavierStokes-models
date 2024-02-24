@@ -1,6 +1,6 @@
 import numpy as np
-from ezyrb import RBF, GPR, POD#, ANN
-import scipy.linalg
+from ezyrb import RBF, GPR
+from scipy.linalg import svd
 from periodicnavierstokes import PeriodicNavierStokes
 from tqdm import trange
 import torch.nn as nn
@@ -42,7 +42,21 @@ a_test=a_test.unsqueeze(-1).repeat(1,1,50).reshape(a_test.shape[0],-1)
 points=all_points
 points_super=all_points_super
 
-class ANN(nn.Module):
+def compute_exact(y,rank=20):
+    M=y@y.T
+    u,s,v=svd(M)
+    u=u[:,:rank]
+    s=s[:rank]
+    v=v[:rank]
+    s=np.sqrt(s)
+    v_bar=np.diag(1/s)@u.T@y
+    s=np.sqrt(s)
+    v_bar=np.diag(s)@v_bar
+    u_bar=u@np.diag(s)
+    return u_bar,v_bar
+
+
+class ANN_1(nn.Module):
     def __init__(self,input_size,output_size):
         super().__init__()
         self.nn=nn.Sequential(
@@ -113,24 +127,97 @@ class ANN(nn.Module):
                 a[i:j]=pred
                 i=i+batch_size
                 j=j+batch_size
-            return self(torch.tensor(input).cuda()).cpu().numpy().reshape(input.shape[0],-1)
+            pred=self(torch.tensor(input).cuda()).cpu().numpy().reshape(input.shape[0],-1)
+            return pred
+
+
+class ANN_2(nn.Module):
+    def __init__(self,input_size,output_size):
+        super().__init__()
+        self.nn=nn.Sequential(
+            nn.Linear(input_size,500),
+            nn.BatchNorm1d(500),
+            nn.ReLU(),
+            nn.Linear(500,500),
+            nn.BatchNorm1d(500),
+            nn.ReLU(),
+            nn.Linear(500,500),
+            nn.BatchNorm1d(500),
+            nn.ReLU(),
+            nn.Linear(500,500),
+            nn.BatchNorm1d(500),
+            nn.ReLU(),
+            nn.Linear(500,500),
+            nn.BatchNorm1d(500),
+            nn.ReLU(),
+            nn.Linear(500,output_size)
+        )
+        self.output_size=output_size
+    def forward(self,x):
+        return self.nn(x)
     
+    def fit(self,input,output,num_epochs,batch_size=-1,lr=0.001):
+        if batch_size==-1:
+            batch_size=input.shape[0]
+        input_torch=torch.tensor(input)
+        output_torch=torch.tensor(output)
+        dataset=torch.utils.data.TensorDataset(input_torch,output_torch)
+        data_loader=torch.utils.data.DataLoader(dataset,batch_size=batch_size)
+        optimizer=torch.optim.AdamW(self.parameters(),lr=lr)
+        for _ in trange(num_epochs):
+            sup_m=0
+            low_m=0
+            for batch in data_loader:
+                optimizer.zero_grad()
+                v,u=batch
+                v=v.cuda().reshape(batch_size,-1)
+                u=u.reshape(batch_size,-1)
+                u=u.cuda()
+                pred=self(v)
+                pred=pred.reshape(batch_size,-1)
+                loss=torch.linalg.norm(pred-u)
+                loss.backward()
+                optimizer.step()
+                with torch.no_grad():
+                    sup_m+=torch.sum(torch.linalg.norm(pred-u,axis=1)**2)
+                    low_m+=torch.sum(torch.linalg.norm(u,axis=1)**2)
+            with torch.no_grad():
+                print(f'Epoch: {_}, Loss: {torch.sqrt(sup_m/low_m)}')
+
+    def predict(self,input,batch_size=-1):
+        a=np.zeros((input.shape[0],self.output_size))
+        input_torch=torch.tensor(input)
+        dataset=torch.utils.data.TensorDataset(input_torch)
+        data_loader=torch.utils.data.DataLoader(dataset,batch_size=batch_size)
+        i=0
+        j=batch_size
+        with torch.no_grad():
+            for batch in data_loader:
+                v,=batch
+                v=v.cuda().reshape(batch_size,-1)
+                pred=self(v)
+                pred=pred.reshape(batch_size,-1).cpu().numpy()
+                a[i:j]=pred
+                i=i+batch_size
+                j=j+batch_size
+            pred=self(torch.tensor(input).cuda()).cpu().numpy().reshape(input.shape[0],-1)
+            return pred#*(self.output_max-self.output_min)+self.output_min
+
 
 class Operator():
     def __init__(self,m,p): #m is the number of sensors
-        self.model_trunk=ANN(3,p).cuda()
-        self.model_branch=ANN(m,p).cuda()
-        self.pod=POD(method='randomized_svd',rank=p)
+        self.model_branch=ANN_1(m,p).cuda()
+        self.model_trunk=ANN_2(3,p).cuda()
         self.m=m
         self.p=p
     
     def fit(self,x,y,points):
-        self.pod.fit(y)
-        self.modes=self.pod.modes
-        self.basis=self.pod.transform(y)
+        #self.y_max=np.max(y)
+        #self.y_min=np.min(y)
+        #y=(y-self.y_min)/(self.y_max-self.y_min)
+        self.modes,self.basis=compute_exact(y,self.p)
         self.indices=np.random.permutation(self.basis.shape[1])[:self.m]
-
-        self.model_branch.fit(x[:,self.indices],self.modes,10000,600)
+        self.model_branch.fit(x[:,self.indices],self.modes,10000,600)#
         self.model_branch.eval()
         print(np.linalg.norm(self.model_branch.predict(x[:,self.indices],batch_size=600)-self.modes)/np.linalg.norm(self.modes))
         self.model_trunk.fit(points,self.basis.T,100,8192,1e-02)
@@ -139,10 +226,13 @@ class Operator():
         
     def predict(self,x,points):
         x_red=x[:,self.indices]
-        return self.model_branch.predict(x_red,batch_size=1)@(self.model_trunk.predict(points,batch_size=8192).T)
+        tmp_1=self.model_branch.predict(x_red,batch_size=1)
+        tmp_2=self.model_trunk.predict(points,batch_size=8192).T
+        tmp=tmp_1@tmp_2
+        return tmp#*(self.y_max-self.y_min)+self.y_min
     
 
-model=Operator(p=500,m=1000)
+model=Operator(p=20,m=1000)
 
 a_train=a_train.numpy()
 points=points.numpy()
