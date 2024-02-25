@@ -13,3 +13,4 @@ performances, are summed up here.
 |DeepOnet (SpacetimeCoupled)           |0.31             |0.39                  |
 |FNO                                   |0.09             |0.08                  |
 |AVNO                                  |0.20             |0.16                  |
+|MIONet                                |0.33             |0.44                  |
