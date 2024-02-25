@@ -14,3 +14,5 @@ performances, are summed up here.
 |FNO                                   |0.09             |0.08                  |
 |AVNO                                  |0.20             |0.16                  |
 |MIONet                                |0.33             |0.44                  |
+|DoublePOD-MIONet                      |0.08             |0.06                  |
+|DoublePOD-Tree                        |0.05             |0.16                  |
